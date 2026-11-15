@@ -1,0 +1,35 @@
+<?php
+// Recebe alertas enviados pelo APP e grava no banco independente do SITE.
+date_default_timezone_set('America/Sao_Paulo');
+header('Content-Type: application/json; charset=utf-8');
+require_once __DIR__ . '/config.php';
+function responder(int $status, array $corpo): void { http_response_code($status); echo json_encode($corpo, JSON_UNESCAPED_UNICODE); exit; }
+$token = trim(str_replace('Bearer ', '', $_SERVER['HTTP_AUTHORIZATION'] ?? ''));
+if (SYNC_TOKEN === '' || !hash_equals(SYNC_TOKEN, $token)) responder(401, ['status'=>'erro', 'mensagem'=>'Não autorizado.']);
+try {
+    $input = json_decode(file_get_contents('php://input'), true);
+    if (!is_array($input)) responder(400, ['status'=>'erro', 'mensagem'=>'Dados inválidos.']);
+    $origemId = trim((string)($input['origem_id'] ?? ''));
+    $bpm = filter_var($input['bpm'] ?? null, FILTER_VALIDATE_INT);
+    $spo2 = filter_var($input['spo2'] ?? null, FILTER_VALIDATE_INT);
+    $tipo = strtoupper(trim((string)($input['tipo_evento'] ?? '')));
+    $descricao = trim((string)($input['descricao'] ?? ''));
+    $dataHora = trim((string)($input['data_hora'] ?? ''));
+    if ($tipo === 'NORMAL') $tipo = 'SEM ALTERAÇÃO';
+    if ($dataHora === '') $dataHora = date('Y-m-d H:i:s');
+    $dt = DateTime::createFromFormat('Y-m-d H:i:s', $dataHora);
+    if ($origemId === '' || $bpm === false || $bpm < 1 || $bpm > 300 || $spo2 === false || $spo2 < 1 || $spo2 > 100 ||
+        !in_array($tipo, ['TAQUICARDIA','QUEDA','SEM ALTERAÇÃO'], true) || $descricao === '' || mb_strlen($descricao)>500 || !$dt || $dt->format('Y-m-d H:i:s') !== $dataHora) {
+        responder(422, ['status'=>'erro', 'mensagem'=>'Campos inválidos.']);
+    }
+    $pdo = new PDO('sqlite:' . __DIR__ . '/../healthtime.db');
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $pdo->exec('PRAGMA busy_timeout = 5000');
+    $pdo->exec("CREATE TABLE IF NOT EXISTS alertas (id INTEGER PRIMARY KEY AUTOINCREMENT, bpm INTEGER, spo2 INTEGER, tipo_evento TEXT, descricao TEXT, data_hora DATETIME DEFAULT CURRENT_TIMESTAMP)");
+    $cols = $pdo->query('PRAGMA table_info(alertas)')->fetchAll(PDO::FETCH_COLUMN, 1);
+    if (!in_array('origem_id', $cols, true)) $pdo->exec('ALTER TABLE alertas ADD COLUMN origem_id TEXT');
+    $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_alertas_origem_id ON alertas(origem_id)');
+    $stmt = $pdo->prepare("INSERT OR IGNORE INTO alertas (origem_id,bpm,spo2,tipo_evento,descricao,data_hora) VALUES (:origem,:bpm,:spo2,:tipo,:descricao,:dh)");
+    $stmt->execute([':origem'=>$origemId, ':bpm'=>$bpm, ':spo2'=>$spo2, ':tipo'=>$tipo, ':descricao'=>$descricao, ':dh'=>$dataHora]);
+    responder(200, ['status'=>'sucesso', 'mensagem'=>'Alerta recebido.', 'duplicado'=>$stmt->rowCount()===0]);
+} catch (Throwable $e) { responder(500, ['status'=>'erro', 'mensagem'=>'Falha ao registrar alerta.']); }

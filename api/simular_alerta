@@ -1,0 +1,58 @@
+<?php
+date_default_timezone_set('America/Sao_Paulo');
+header('Content-Type: application/json; charset=utf-8');
+header('Access-Control-Allow-Origin: *');
+require_once __DIR__ . '/sync.php';
+
+try {
+    $rawInput = file_get_contents('php://input');
+    $input = json_decode($rawInput, true);
+    $texto = isset($input['texto']) ? trim($input['texto']) : (isset($_POST['texto']) ? trim($_POST['texto']) : '');
+
+    if (empty($texto)) {
+        http_response_code(400);
+        echo json_encode(['erro' => 'O texto do parecer está vazio.'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $pdo = site_db();
+
+    // Busca o evento mais recente do paciente no momento da anotação
+    $estadoAtual = 'SEM ALTERAÇÃO';
+    $tabelaAlertas = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name='alertas'")->fetch();
+    if ($tabelaAlertas) {
+        $stmtEvento = $pdo->query("SELECT tipo_evento FROM alertas ORDER BY data_hora DESC, id DESC LIMIT 1");
+        $ultimoEvento = $stmtEvento->fetch(PDO::FETCH_ASSOC);
+        if ($ultimoEvento && !empty($ultimoEvento['tipo_evento'])) {
+            $estadoAtual = trim($ultimoEvento['tipo_evento']);
+        }
+    }
+
+    $dataHoraAtual = date('Y-m-d H:i:s');
+
+    $origemId = bin2hex(random_bytes(16));
+    $stmt = $pdo->prepare("INSERT INTO pareceres (paciente_nome, medico_nome, texto, estado_evento, data_hora, origem_id, sincronizado_app) VALUES (:paciente, :medico, :texto, :estado_evento, :data_hora, :origem_id, 0)");
+    $stmt->execute([
+        ':paciente' => 'Marianna Batista',
+        ':medico' => 'Dr. Carlos Eduardo',
+        ':texto' => $texto,
+        ':estado_evento' => $estadoAtual,
+        ':data_hora' => $dataHoraAtual,
+        ':origem_id' => $origemId
+    ]);
+
+    // Tenta enviar imediatamente; se o APP estiver offline, o registro fica pendente para nova tentativa.
+    $sync = enviar_pareceres_pendentes($pdo);
+
+    echo json_encode([
+        'status' => 'sucesso',
+        'mensagem' => 'Parecer gravado no banco de dados do prontuário!',
+        'estado_evento' => $estadoAtual,
+        'sincronizado_app' => (($sync['configurado'] ?? false) && ($sync['pendentes'] ?? 1) === 0),
+        'pendentes_app' => $sync['pendentes'] ?? null
+    ], JSON_UNESCAPED_UNICODE);
+
+} catch (Throwable $e) {
+    http_response_code(500);
+    echo json_encode(['erro' => 'Falha no PHP/SQLite: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE);
+}

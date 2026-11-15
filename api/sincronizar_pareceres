@@ -1,0 +1,16 @@
+<?php
+header('Content-Type: application/json; charset=utf-8');
+require_once __DIR__ . '/sync.php';
+$token = trim(str_replace('Bearer ', '', $_SERVER['HTTP_AUTHORIZATION'] ?? ''));
+if (SYNC_TOKEN === '' || !hash_equals(SYNC_TOKEN, $token)) {
+    http_response_code(401);
+    echo json_encode(['status'=>'erro', 'mensagem'=>'Não autorizado.'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+try {
+    $resultado = enviar_pareceres_pendentes(site_db());
+    echo json_encode(['status'=>'sucesso'] + $resultado, JSON_UNESCAPED_UNICODE);
+} catch (Throwable $e) {
+    http_response_code(500);
+    echo json_encode(['status'=>'erro', 'mensagem'=>'Falha na sincronização.'], JSON_UNESCAPED_UNICODE);
+}
